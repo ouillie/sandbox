@@ -31,8 +31,14 @@ Each such directory may contain any of the following files:
 - `proxy.py`: An `mitmproxy` add-on script to customize network access.
 - `settings.json`: A JSON file containing configuration settings for the sandbox.
 
+In both cases, child directories take precedence over parent directories.
+For `mitmproxy` scripts, that means child scripts are processed first,
+followed by ancestors up the path.
+Settings files are merged, with fields from children taking precedence
+over the same fields in their parents.
+
 Before starting the sandbox,
-the URL of a locally-accessibly web console to monitor network traffic
+the URL of a locally-accessibly `mitmweb` console to monitor network traffic
 is displayed.
 
 ## Settings
