@@ -1,29 +1,13 @@
 #!/usr/bin/env bash
 
-# Run a command in an ephemeral, interactive container.
-# The container has an overlayed view onto the host's filesystem
-# (read-only with ephemeral copy-on-write semantics),
-# except for the current working directory,
-# which is mounted read-write.
-#
-# Certain special directories, like the Bazel cache,
-# which are both important for usability and tolerant of total destruction,
-# are also mounted read-write.
-#
-# Any additional arguments passed are used as the command to run in the container.
-# Run the user's shell if no arguments are passed.
-#
-# A sidecar mitmproxy container can be used to inspect and/or modify
-# all outgoing network traffic.
-
 set -euo pipefail
 
 # Iterate up the directory tree, looking for sibling directories named `.sandbox`.
 # In each of those directories, process the following files:
 # - `proxy.py`: Loaded as an mitmproxy addon.
-# - `settings.json`: Settings to configure the sandbox.
+# - `configure.sh`: Settings configuration for the sandbox.
 proxy_addon_mounts=()
-settings='{}'
+configure_paths=()
 directory="${PWD}"
 index=1
 while
@@ -31,18 +15,13 @@ while
   if [ -f "${proxy_addon}" ]
   then
     proxy_destination="/root/addons/$(printf '%03d' "${index}").py"
-    proxy_addon_mounts+=(--volume="$(realpath "${proxy_addon}")":"${proxy_destination}":ro)
+    proxy_addon_mounts+=(--volume="${proxy_addon}":"${proxy_destination}":ro)
   fi
 
-  settings_path="${directory}/.sandbox/settings.json"
-  if [ -f "${settings_path}" ]
+  configure_path="${directory}/.sandbox/configure.sh"
+  if [ -f "${configure_path}" ]
   then
-    settings="$(
-      jq --null-input \
-        --argjson dom "${settings}" \
-        --argjson sub "$(cat "${settings_path}")" \
-        '$sub * $dom'
-    )"
+    configure_paths+=("${configure_path}")
   fi
 
   [ "${directory}" != '/' ]
@@ -51,118 +30,195 @@ do
   index=$(( index + 1 ))
 done
 
-# A dedicated bridge network for this sandbox. The workload tunnels all of its
-# traffic to the proxy over WireGuard, and mitmproxy intercepts it there.
-proxy="sandbox-proxy-$$"
-egress="${proxy}-egress"
-cleanup() {
-  podman rm -f "${proxy}" >/dev/null 2>&1 || true
-  podman network rm "${proxy}" "${egress}" >/dev/null 2>&1 || true
-}
-trap cleanup EXIT
-
 # The workload's network is internal: it has no route to the internet of its own,
-# so the proxy (its only other neighbor, dual-homed onto the egress network)
-# is the only way out.
-podman network create --internal "${proxy}" >/dev/null
-podman network create "${egress}" >/dev/null
+# so the proxy (its only neighbor, dual-homed onto the egress network) is the only way out.
+wireguard_network="$(podman network create --internal)"
+egress_network="$(podman network create)"
 
-podman run >/dev/null \
-  --detach --rm \
-  --user=root \
-  --network="${proxy}" \
-  --network="${egress}" \
-  --hostname='sandbox-proxy' \
-  --volume=/root/.mitmproxy \
-  "${proxy_addon_mounts[@]}" \
-  --publish=127.0.0.1::8081 \
-  --name "${proxy}" \
-  mitmproxy/mitmproxy:latest \
-  bash -c '
-    arguments=(
-      --mode=wireguard
-      # Use the `Host` header to construct URLs for display.
-      --set=showhost=true
-      # Serve the web console on all interfaces inside the container.
-      --web-host=0.0.0.0
-      # Do not try to open the web browser in the container (do that from the host).
-      --no-web-open-browser
-      # `mitmweb` always requires auth;
-      # an empty password just makes it mint a random token every time.
-      # The console is only published to the loopback on the host,
-      # so pin a known password and let the launcher pass it as `?token=`
-      # to skip the prompt.
-      --set=web_password=sandbox
-    )
-    for script in "${HOME}"/addons/*.py
-    do
-      arguments+=(--scripts="${script}")
-    done
-    exec mitmweb "${arguments[@]}"
-  '
+function cleanup-networks {
+  podman network rm "${wireguard_network}" "${egress_network}" >/dev/null 2>&1 || true
+}
+trap cleanup-networks EXIT
+
+# `mitmweb` always requires auth (setting an empty password just makes it generate a random one).
+# Pin a known password and let the launcher pass it as `?token=` to skip the prompt.
+mitmweb_password='sandbox'
+
+proxy_container="$(
+  podman run \
+    --detach --rm \
+    --user=root \
+    --network="${wireguard_network}" \
+    --network="${egress_network}" \
+    --volume=/root/.mitmproxy \
+    "${proxy_addon_mounts[@]}" \
+    --publish=127.0.0.1::8081 \
+    mitmproxy/mitmproxy:latest \
+    bash -c '
+      arguments=(
+        --mode=wireguard
+        --set=web_password="${0}"
+        --web-host=0.0.0.0
+        --no-web-open-browser
+        # Use the `Host` header to construct URLs for display.
+        --set=showhost=true
+      )
+      shopt -s nullglob
+      for script in "${HOME}"/addons/*.py
+      do
+        arguments+=(--scripts="${script}")
+      done
+      exec mitmweb "${arguments[@]}"
+    ' "${mitmweb_password}"
+)"
+
+function cleanup-proxy-container {
+  podman rm -f "${proxy_container}" >/dev/null 2>&1 || true
+  cleanup-networks
+}
+trap cleanup-proxy-container EXIT
 
 # Wait for mitmproxy to generate its CA and WireGuard keys.
-until podman exec "${proxy}" test -f /root/.mitmproxy/mitmproxy-ca-cert.pem 2>/dev/null
+mitmproxy_ca_path='/root/.mitmproxy/mitmproxy-ca-cert.pem'
+timeout=5
+start=$(date +%s)
+until podman exec "${proxy_container}" test -f "${mitmproxy_ca_path}" 2>/dev/null
 do
   sleep 0
+  now=$(date +%s)
+  if (( now - start > timeout ))
+  then
+    echo "Failed to start proxy pod after ${timeout} seconds" >&2
+    exit 1
+  fi
 done
+
+echo "Network monitor: http://$(podman port "${proxy_container}" 8081)/?token=${mitmweb_password}" >&2
 
 # The proxy's address is the WireGuard endpoint. mitmproxy stores both private
 # keys, so derive the server's public key (which the workload's peer needs).
-proxy_ip="$(podman inspect --format="{{(index .NetworkSettings.Networks \"${proxy}\").IPAddress}}" "${proxy}")"
-read -r server_pubkey client_key < <(podman exec "${proxy}" python -c \
+proxy_ip="$(podman inspect --format="{{(index .NetworkSettings.Networks \"${wireguard_network}\").IPAddress}}" "${proxy_container}")"
+read -r server_key client_key < <(podman exec "${proxy_container}" python -c \
   'import json, mitmproxy_rs; c = json.load(open("/root/.mitmproxy/wireguard.conf")); print(mitmproxy_rs.wireguard.pubkey(c["server_key"]), c["client_key"])')
 
-# The `?token=` matches `web_password` in proxy/main.sh, so the console skips the login prompt.
-printf 'Web console: http://%s/?token=sandbox\n' "$(podman port "${proxy}" 8081)"
-
-# Run the supplied command arguments, or the shell by default.
-if (( $# == 0 )); then
-  declare -a cmd=("${SHELL:-/usr/bin/bash}")
-else
-  declare -a cmd=("$@")
+# Sandbox container image.
+SANDBOX_IMAGE="${SANDBOX_IMAGE:-debian:latest}"
+# Sandbox container username.
+SANDBOX_USER="${SANDBOX_USER:-root}"
+# Sandbox container hostname.
+SANDBOX_HOSTNAME="${SANDBOX_HOSTNAME:-sandbox}"
+# Working directory in the sandbox at entry.
+# By default, use the current working directory on the host.
+# If that path starts with the host's `${HOME}` path, swap out the prefix for `/root`,
+# because the process in the sandbox runs as root by default.
+if [ -z "${SANDBOX_WORKDIR+.}" ]
+then
+  case "${PWD}" in
+    "${HOME}"|"${HOME}"/*)
+      SANDBOX_WORKDIR="${PWD/#${HOME}//root}"
+      ;;
+    *)
+      SANDBOX_WORKDIR="${PWD}"
+      ;;
+  esac
+fi
+# Array of mount points to bind-mount from the host into the sandbox,
+# using Podman's `<host-path>:<guest-path>[:<mode>]` syntax,
+# where `<mode>` can be `ro`, `rw`, or `O` (overlay).
+# By default, mount the host's `${HOME}` directory to `/root` as an overlay,
+# and mount the host's working directory to the guest's working directory read-write.
+if [ -z "${SANDBOX_MOUNTS[@]+.}" ]
+then
+  declare -a SANDBOX_MOUNTS=(
+    "${HOME}":'/root':O
+    "${PWD}":"${SANDBOX_WORKDIR}":rw
+  )
+fi
+# Array of environment variables to set in the sandbox
+# using Podman's `NAME=VALUE` or simply `NAME` syntax.
+# By default, set various environment variables to trust the proxy's ephemeral CA in most apps,
+# since the proxy intercepts all network traffic, terminating TLS if necessary.
+# Also set `IS_SANDBOX=1`
+# which is required by Claude Code to run as root with `--dangerously-skip-permissions`.
+# https://github.com/anthropics/claude-code/issues/9184
+if [ -z "${SANDBOX_ENV[@]+.}" ]
+then
+  declare -a SANDBOX_ENV=(
+    SSL_CERT_FILE="${mitmproxy_ca_path}"
+    CURL_CA_BUNDLE="${mitmproxy_ca_path}"
+    GIT_SSL_CAINFO="${mitmproxy_ca_path}"
+    CARGO_HTTP_CAINFO="${mitmproxy_ca_path}"
+    NODE_EXTRA_CA_CERTS="${mitmproxy_ca_path}"
+    REQUESTS_CA_BUNDLE="${mitmproxy_ca_path}"
+    IS_SANDBOX=1
+  )
 fi
 
-# The current working directory in the sandbox,
-# but if "${HOME} is at the beginning, substitute it for `/root`,
-# because the process in the sandbox runs as root.
-workdir="${PWD/#${HOME}//root}"
+# Process the user's configuration scripts from root to leaf.
+for (( i=${#configure_paths[@]}-1; i>=0; i-- ))
+do
+  source "${configure_paths[i]}"
+done
 
-# Bring up the WireGuard tunnel to the proxy and install its CA, then run the command.
-# The CA env vars cover runtimes (Node, Python requests, ...) that ignore the system store.
-# Set `IS_SANDBOX=1` to allow CC to run as root with `--dangerously-skip-permissions`.
-# https://github.com/anthropics/claude-code/issues/9184
+# A pod owns the sandbox' network namespace.
+# A throwaway container will configure the WireGuard tunnel inside the pod before the sandbox starts.
+sandbox_pod="$(podman pod create --network="${wireguard_network}" --hostname="${SANDBOX_HOSTNAME}")"
+
+function cleanup-pod {
+  podman pod rm -f "${sandbox_pod}" >/dev/null 2>&1 || true
+  cleanup-proxy-container
+}
+trap cleanup-pod EXIT
+
+# Set up the WireGuard tunnel to the proxy in the sandbox pod's namespace.
 podman run \
-  --interactive --rm --tty \
-  --volume='/usr':'/usr':O \
-  --volume='/opt':'/opt':O \
-  --volume="${HOME}":'/root':O \
-  --volume="${HOME}/.cache/bazel":'/root/.cache/bazel' \
-  --volume="${HOME}/.cache/bazelisk":'/root/.cache/bazelisk' \
-  --volume="${PWD}":"${workdir}" \
-  --workdir="${workdir}" \
-  --hostname='sandbox' \
-  --network="${proxy}" \
+  --rm \
+  --pod="${sandbox_pod}" \
   --cap-add=NET_ADMIN \
-  --volumes-from="${proxy}":ro \
-  --env=PROXY_IP="${proxy_ip}" \
-  --env=SERVER_PUBKEY="${server_pubkey}" \
-  --env=CLIENT_KEY="${client_key}" \
-  --env=NODE_EXTRA_CA_CERTS='/etc/ca-certificates/trust-source/anchors/sandbox-proxy.crt' \
-  --env=REQUESTS_CA_BUNDLE='/etc/ca-certificates/trust-source/anchors/sandbox-proxy.crt' \
-  --env=SSL_CERT_FILE='/etc/ca-certificates/trust-source/anchors/sandbox-proxy.crt' \
-  --env=IS_SANDBOX=1 \
-  archlinux:latest \
-  sh -c '
+  mitmproxy/mitmproxy:latest \
+  bash -c '
     ip link add wg0 type wireguard
-    printf "%s\n" "${CLIENT_KEY}" >/tmp/wg.key
-    wg set wg0 private-key /tmp/wg.key peer "${SERVER_PUBKEY}" endpoint "${PROXY_IP}:51820" allowed-ips 0.0.0.0/0
-    rm -f /tmp/wg.key
+    wg set wg0 private-key <(echo "${1}") peer "${2}" endpoint "${3}:51820" allowed-ips 0.0.0.0/0
     ip address add 10.0.0.1/32 dev wg0
     ip link set wg0 up
     ip route replace default dev wg0
-    printf "nameserver 10.0.0.53\n" >/etc/resolv.conf
-    cp /root/.mitmproxy/mitmproxy-ca-cert.pem /etc/ca-certificates/trust-source/anchors/sandbox-proxy.crt
-    update-ca-trust
-    exec "$@"
-  ' "${0}" "${cmd[@]}"
+  ' "${0}" "${client_key}" "${server_key}" "${proxy_ip}"
+
+declare -a arguments=()
+if [ -t 0 ]
+then
+  arguments+=(--tty)
+fi
+
+# Join the configured namespace and run the command. The CA env vars cover runtimes
+# (Node, Python requests, ...) that ignore the system store; the copy below covers
+# those that only read the default OpenSSL bundle.
+podman run \
+  --interactive --rm \
+  "${arguments[@]}" \
+  --pod="${sandbox_pod}" \
+  --volumes-from="${proxy_container}":ro \
+  --user="${SANDBOX_USER}" \
+  --workdir="${SANDBOX_WORKDIR}" \
+  "${SANDBOX_MOUNTS[@]/#/--volume=}" \
+  "${SANDBOX_ENV[@]/#/--env=}" \
+  "${SANDBOX_IMAGE}" \
+  bash -c '
+    echo "nameserver 10.0.0.53" >/etc/resolv.conf
+
+    for ca_certificates in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt
+    do
+      if [ -f "${ca_certificates}" ]
+      then
+        cp "${1}" "${ca_certificates}"
+      fi
+    done
+
+    shift
+    if (( $# == 0 ))
+    then
+      exec "${SHELL:-/usr/bin/bash}"
+    else
+      exec "$@"
+    fi
+  ' "${0}" "${mitmproxy_ca_path}" "$@"
