@@ -21,16 +21,30 @@ set -euo pipefail
 # Iterate up the directory tree, looking for sibling directories named `.sandbox`.
 # In each of those directories, process the following files:
 # - `proxy.py`: Loaded as an mitmproxy addon.
+# - `settings.json`: Settings to configure the sandbox.
 proxy_addon_mounts=()
+settings='{}'
 directory="${PWD}"
 index=1
 while
   proxy_addon="${directory}/.sandbox/proxy.py"
   if [ -f "${proxy_addon}" ]
   then
-    proxy_destination="/root/addons/10-$(printf '%03d' "${index}").py"
+    proxy_destination="/root/addons/$(printf '%03d' "${index}").py"
     proxy_addon_mounts+=(--volume="$(realpath "${proxy_addon}")":"${proxy_destination}":ro)
   fi
+
+  settings_path="${directory}/.sandbox/settings.json"
+  if [ -f "${settings_path}" ]
+  then
+    settings="$(
+      jq --null-input \
+        --argjson dom "${settings}" \
+        --argjson sub "$(cat "${settings_path}")" \
+        '$sub * $dom'
+    )"
+  fi
+
   [ "${directory}" != '/' ]
 do
   directory="$(dirname "${directory}")"
@@ -47,8 +61,6 @@ cleanup() {
 }
 trap cleanup EXIT
 
-printf 'Creating proxy container and networking ... '
-
 # The workload's network is internal: it has no route to the internet of its own,
 # so the proxy (its only other neighbor, dual-homed onto the egress network)
 # is the only way out.
@@ -57,13 +69,37 @@ podman network create "${egress}" >/dev/null
 
 podman run >/dev/null \
   --detach --rm \
+  --user=root \
   --network="${proxy}" \
   --network="${egress}" \
   --hostname='sandbox-proxy' \
   --volume=/root/.mitmproxy \
   "${proxy_addon_mounts[@]}" \
+  --publish=127.0.0.1::8081 \
   --name "${proxy}" \
-  sandbox-proxy:latest
+  mitmproxy/mitmproxy:latest \
+  bash -c '
+    arguments=(
+      --mode=wireguard
+      # Use the `Host` header to construct URLs for display.
+      --set=showhost=true
+      # Serve the web console on all interfaces inside the container.
+      --web-host=0.0.0.0
+      # Do not try to open the web browser in the container (do that from the host).
+      --no-web-open-browser
+      # `mitmweb` always requires auth;
+      # an empty password just makes it mint a random token every time.
+      # The console is only published to the loopback on the host,
+      # so pin a known password and let the launcher pass it as `?token=`
+      # to skip the prompt.
+      --set=web_password=sandbox
+    )
+    for script in "${HOME}"/addons/*.py
+    do
+      arguments+=(--scripts="${script}")
+    done
+    exec mitmweb "${arguments[@]}"
+  '
 
 # Wait for mitmproxy to generate its CA and WireGuard keys.
 until podman exec "${proxy}" test -f /root/.mitmproxy/mitmproxy-ca-cert.pem 2>/dev/null
@@ -77,7 +113,8 @@ proxy_ip="$(podman inspect --format="{{(index .NetworkSettings.Networks \"${prox
 read -r server_pubkey client_key < <(podman exec "${proxy}" python -c \
   'import json, mitmproxy_rs; c = json.load(open("/root/.mitmproxy/wireguard.conf")); print(mitmproxy_rs.wireguard.pubkey(c["server_key"]), c["client_key"])')
 
-printf 'Done\n'
+# The `?token=` matches `web_password` in proxy/main.sh, so the console skips the login prompt.
+printf 'Web console: http://%s/?token=sandbox\n' "$(podman port "${proxy}" 8081)"
 
 # Run the supplied command arguments, or the shell by default.
 if (( $# == 0 )); then
