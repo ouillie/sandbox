@@ -35,8 +35,31 @@ done
 wireguard_network="$(podman network create --internal)"
 egress_network="$(podman network create)"
 
+mitmproxy_confdir="$(mktemp -d)"
+mitmproxy_host_ca_path="${mitmproxy_confdir}/mitmproxy-ca.pem"
+mitmproxy_host_ca_cert_path="${mitmproxy_confdir}/mitmproxy-ca-cert.pem"
+podman run \
+  --rm \
+  --volume="${mitmproxy_confdir}":/root/.mitmproxy:rw \
+  mitmproxy/mitmproxy:latest \
+  bash -c '
+    openssl req -x509 \
+      -newkey rsa:2048 \
+      -noenc -batch -quiet \
+      -days 365 \
+      -keyout /root/.mitmproxy/mitmproxy-ca.key \
+      -out /root/.mitmproxy/mitmproxy-ca-cert.pem \
+      -subj "/O=mitmproxy/CN=mitmproxy" \
+      -addext "basicConstraints=critical,CA:TRUE" \
+      -addext "keyUsage=critical,keyCertSign,cRLSign"
+    cat /root/.mitmproxy/mitmproxy-ca.key /root/.mitmproxy/mitmproxy-ca-cert.pem \
+      > /root/.mitmproxy/mitmproxy-ca.pem
+  '
+export PROXY_CA_CERT_PEM="$(< "${mitmproxy_host_ca_cert_path}")"
+
 function cleanup-networks {
   podman network rm "${wireguard_network}" "${egress_network}" >/dev/null 2>&1 || true
+  rm -rf "${mitmproxy_confdir}"
 }
 trap cleanup-networks EXIT
 
@@ -50,7 +73,7 @@ proxy_container="$(
     --user=root \
     --network="${wireguard_network}" \
     --network="${egress_network}" \
-    --volume=/root/.mitmproxy \
+    --volume="${mitmproxy_confdir}":/root/.mitmproxy:rw \
     "${proxy_addon_mounts[@]}" \
     --publish=127.0.0.1::8081 \
     mitmproxy/mitmproxy:latest \
@@ -80,9 +103,10 @@ trap cleanup-proxy-container EXIT
 
 # Wait for mitmproxy to generate its CA and WireGuard keys.
 mitmproxy_ca_path='/root/.mitmproxy/mitmproxy-ca-cert.pem'
+wireguard_key_path='/root/.mitmproxy/wireguard.conf'
 timeout=5
 start=$(date +%s)
-until podman exec "${proxy_container}" test -f "${mitmproxy_ca_path}" 2>/dev/null
+until podman exec "${proxy_container}" test -f "${wireguard_key_path}" 2> /dev/null
 do
   sleep 0
   now=$(date +%s)
