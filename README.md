@@ -50,51 +50,60 @@ is displayed.
 The sandbox can be customized by setting the following environment variables,
 shown with their default values:
 
-```bash
-# Sandbox container image.
-SANDBOX_IMAGE='debian:latest'
-
-# Sandbox container username.
-SANDBOX_USER='root'
-
-# Sandbox container hostname.
-SANDBOX_HOSTNAME='sandbox'
-
-# Working directory in the sandbox at entry.
-# By default, use the current working directory on the host.
-# If that path starts with the host's `${HOME}` path, swap out the prefix for `/root`,
-# because the process in the sandbox runs as root by default.
-SANDBOX_WORKDIR="${PWD/#${HOME}//root}"
-
-# Array of mount points to bind-mount from the host into the sandbox,
-# using Podman's `<host-path>:<guest-path>[:<mode>]` syntax,
-# where `<mode>` can be `ro`, `rw`, or `O` (overlay).
-# By default, mount the host's `${HOME}` directory to `/root` as an overlay,
-# and mount the host's working directory to the guest's working directory read-write.
-SANDBOX_MOUNTS=(
-  "${HOME}":'/root':O
-  "${PWD}":"${SANDBOX_WORKDIR}":rw
-)
-
-# Array of environment variables to set in the sandbox
-# using Podman's `NAME=VALUE` or simply `NAME` syntax.
-# By default, set various environment variables to trust the proxy's ephemeral CA in most apps,
-# since the proxy intercepts all network traffic, terminating TLS if necessary.
-# Also set `IS_SANDBOX=1`
-# which is required by Claude Code to run as root with `--dangerously-skip-permissions`.
-SANDBOX_ENV=(
-  SSL_CERT_FILE='/root/.mitmproxy/mitmproxy-ca-cert.pem'
-  CURL_CA_BUNDLE='/root/.mitmproxy/mitmproxy-ca-cert.pem'
-  GIT_SSL_CAINFO='/root/.mitmproxy/mitmproxy-ca-cert.pem'
-  CARGO_HTTP_CAINFO='/root/.mitmproxy/mitmproxy-ca-cert.pem'
-  NODE_EXTRA_CA_CERTS='/root/.mitmproxy/mitmproxy-ca-cert.pem'
-  REQUESTS_CA_BUNDLE='/root/.mitmproxy/mitmproxy-ca-cert.pem'
-  IS_SANDBOX=1
-)
-# Array of environment variables to set in the proxy, similar to `SANDBOX_ENV`.
-# Empty by default.
-PROXY_ENV=()
-```
+<table>
+  <thead>
+    <tr>
+      <th>Setting</th>
+      <th>Type</th>
+      <th>Default</th>
+      <th>Description</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>SANDBOX_IMAGE</code></td>
+      <td>scalar</td>
+      <td><code>debian:latest</code></td>
+      <td>Sandbox container image.</td>
+    </tr>
+    <tr>
+      <td><code>SANDBOX_USER</code></td>
+      <td>scalar</td>
+      <td><code>root</code></td>
+      <td>Sandbox container username.</td>
+    </tr>
+    <tr>
+      <td><code>SANDBOX_HOSTNAME</code></td>
+      <td>scalar</td>
+      <td><code>sandbox</code></td>
+      <td>Sandbox container hostname.</td>
+    </tr>
+    <tr>
+      <td><code>SANDBOX_WORKDIR</code></td>
+      <td>scalar</td>
+      <td><code>${PWD/#${HOME}//root}</code></td>
+      <td>Working directory in the sandbox at entry. Defaults to the current working directory on the host. If that path starts with the host's <code>${HOME}</code> path, that prefix is swapped for <code>/root</code> because the process in the sandbox runs as root by default.</td>
+    </tr>
+    <tr>
+      <td><code>SANDBOX_MOUNTS</code></td>
+      <td>array</td>
+      <td><code>${HOME}:/root:O</code><br><code>${PWD}:${SANDBOX_WORKDIR}:rw</code></td>
+      <td>Mount points to bind-mount from the host into the sandbox, using Podman's <code>&lt;host-path&gt;:&lt;guest-path&gt;[:&lt;mode&gt;]</code> syntax, where <code>&lt;mode&gt;</code> can be <code>ro</code>, <code>rw</code>, or <code>O</code> (overlay). Defaults to mounting the host's <code>${HOME}</code> directory to <code>/root</code> as an overlay, and the working directory read-write.</td>
+    </tr>
+    <tr>
+      <td><code>SANDBOX_ENV</code></td>
+      <td>array</td>
+      <td><code>SSL_CERT_FILE=&lt;proxy-certificate&gt;</code><br><code>CURL_CA_BUNDLE=&lt;proxy-certificate&gt;</code><br><code>GIT_SSL_CAINFO=&lt;proxy-certificate&gt;</code><br><code>CARGO_HTTP_CAINFO=&lt;proxy-certificate&gt;</code><br><code>NODE_EXTRA_CA_CERTS=&lt;proxy-certificate&gt;</code><br><code>REQUESTS_CA_BUNDLE=&lt;proxy-certificate&gt;</code><br><code>IS_SANDBOX=1</code></td>
+      <td>Environment variables to set in the sandbox using Podman's <code>NAME=VALUE</code> or simply <code>NAME</code> syntax. Defaults to trusting the proxy's ephemeral CA in most apps, since the proxy intercepts all network traffic, and to setting <code>IS_SANDBOX=1</code> to enable Claude Code root execution.</td>
+    </tr>
+    <tr>
+      <td><code>PROXY_ENV</code></td>
+      <td>array</td>
+      <td><code>()</code></td>
+      <td>Environment variables to set in the proxy container, similar to <code>SANDBOX_ENV</code>.</td>
+    </tr>
+  </tbody>
+</table>
 
 If any of these variables are already set when `sandbox` is invoked,
 that value will be used *instead of* the default.
@@ -103,7 +112,7 @@ that value will be used *instead of* the default.
 > When customizing array-valued settings in a `configure.sh` script,
 > be careful as to whether you want to overwrite, append, or otherwise modify the inherited value.
 
-## Example Use Cases
+## Examples
 
 <details>
 <summary><strong>Full System Mount</strong></summary>
@@ -135,7 +144,7 @@ SANDBOX_ENV+=(
 </details>
 
 <details>
-<summary><strong>Sophisticated Network Control</strong></summary>
+<summary><strong>Comprehensive Network Control</strong></summary>
 
 You can basically do anything you want with `mitmproxy` addons.
 
@@ -197,6 +206,68 @@ def dns_response(flow: DNSFlow):
     flow.response.answers = [
         answer for answer in flow.response.answers if answer.type != types.AAAA
     ]
+```
+
+</details>
+
+<details>
+<summary><strong>Intercepting Kubernetes</strong></summary>
+
+Some applications bundle their own trust store,
+for instance the `certificate-authority-data` field in `~/.kube/config`.
+These can still be intercepted properly.
+
+```bash
+# configure.sh
+
+# Decode and concatenate all the `certificate-authority-data` from the kube config.
+kubeconfig_original="${KUBECONFIG:-${HOME}/.kube/config}"
+export KUBE_CONFIG_CA_DATA="$(
+  sed -n 's/^[[:space:]]*certificate-authority-data: //p' "${kubeconfig_original}" |
+    while IFS= read -r ca_data
+    do
+      printf '%s' "${ca_data}" | base64 -d
+      printf '\n'
+    done
+)"
+
+# Replace them with the proxy's CA certificate in a new temporary kube config.
+kubeconfig_masked="$(mktemp)"
+proxy_ca_cert_data="$(printf '%s\n' "$PROXY_CA_CERT_PEM" | base64 | tr -d '\n')"
+sed -E \
+  "s#^([[:space:]]*certificate-authority-data: ).*#\1${proxy_ca_cert_data}#" \
+  "${kubeconfig_original}" \
+  > "${kubeconfig_masked}"
+
+# Mount the modified kube config file into the sandbox container.
+SANDBOX_MOUNTS+=(
+  "${kubeconfig_masked}":'/root/.kube/config':rw
+)
+
+# Pass the original kube config CA data to the proxy container, so it can verify TLS.
+PROXY_ENV+=(
+  KUBE_CONFIG_CA_DATA
+)
+```
+
+```python
+# proxy.py
+
+from certifi import where
+from os import getenv
+from pathlib import Path
+from tempfile import NamedTemporaryFile
+
+from mitmproxy.ctx import options
+
+
+def load(loader):
+    """Add the original kube config CA cert bundle to the proxy's trust store."""
+    kube_config_ca_data = getenv("KUBE_CONFIG_CA_DATA")
+    if kube_config_ca_data is not None:
+        ca_bundle = Path(NamedTemporaryFile(delete=False).name)
+        ca_bundle.write_text(f"{Path(where()).read_text()}\n{kube_config_ca_data}\n")
+        options.update(ssl_verify_upstream_trusted_ca=str(ca_bundle))
 ```
 
 </details>
