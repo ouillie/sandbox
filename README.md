@@ -91,6 +91,9 @@ SANDBOX_ENV=(
   REQUESTS_CA_BUNDLE='/root/.mitmproxy/mitmproxy-ca-cert.pem'
   IS_SANDBOX=1
 )
+# Array of environment variables to set in the proxy, similar to `SANDBOX_ENV`.
+# Empty by default.
+PROXY_ENV=()
 ```
 
 If any of these variables are already set when `sandbox` is invoked,

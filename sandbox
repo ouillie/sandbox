@@ -10,17 +10,23 @@ proxy_addon_mounts=()
 configure_paths=()
 directory="${PWD}"
 index=1
+configured='false'
 while
   proxy_addon="${directory}/.sandbox/proxy.py"
   if [ -f "${proxy_addon}" ]
   then
-    proxy_destination="/root/addons/$(printf '%03d' "${index}").py"
-    proxy_addon_mounts+=(--volume="${proxy_addon}":"${proxy_destination}":ro)
+    proxy_addon="${proxy_addon/#\/\//\/}"
+    echo "Using proxy addon: ${proxy_addon}" >&2
+    configured='true'
+    proxy_addon_mounts+=(--volume="${proxy_addon}":"/root/addons/$(printf '%03d' "${index}").py":ro)
   fi
 
   configure_path="${directory}/.sandbox/configure.sh"
   if [ -f "${configure_path}" ]
   then
+    configure_path="${configure_path/#\/\//\/}"
+    echo "Using configuration: ${configure_path}" >&2
+    configured='true'
     configure_paths+=("${configure_path}")
   fi
 
@@ -29,15 +35,15 @@ do
   directory="$(dirname "${directory}")"
   index=$(( index + 1 ))
 done
-
-# The workload's network is internal: it has no route to the internet of its own,
-# so the proxy (its only neighbor, dual-homed onto the egress network) is the only way out.
-wireguard_network="$(podman network create --internal)"
-egress_network="$(podman network create)"
+if [[ "${configured}" != 'true' ]]
+then
+  echo "Using default configuration"
+fi
 
 mitmproxy_confdir="$(mktemp -d)"
 mitmproxy_host_ca_path="${mitmproxy_confdir}/mitmproxy-ca.pem"
 mitmproxy_host_ca_cert_path="${mitmproxy_confdir}/mitmproxy-ca-cert.pem"
+mitmproxy_ca_path='/root/.mitmproxy/mitmproxy-ca-cert.pem'
 podman run \
   --rm \
   --volume="${mitmproxy_confdir}":/root/.mitmproxy:rw \
@@ -57,73 +63,7 @@ podman run \
   '
 export PROXY_CA_CERT_PEM="$(< "${mitmproxy_host_ca_cert_path}")"
 
-function cleanup-networks {
-  podman network rm "${wireguard_network}" "${egress_network}" >/dev/null 2>&1 || true
-  rm -rf "${mitmproxy_confdir}"
-}
-trap cleanup-networks EXIT
-
-# `mitmweb` always requires auth (setting an empty password just makes it generate a random one).
-# Pin a known password and let the launcher pass it as `?token=` to skip the prompt.
-mitmweb_password='sandbox'
-
-proxy_container="$(
-  podman run \
-    --detach --rm \
-    --user=root \
-    --network="${wireguard_network}" \
-    --network="${egress_network}" \
-    --volume="${mitmproxy_confdir}":/root/.mitmproxy:rw \
-    "${proxy_addon_mounts[@]}" \
-    --publish=127.0.0.1::8081 \
-    mitmproxy/mitmproxy:latest \
-    bash -c '
-      arguments=(
-        --mode=wireguard
-        --set=web_password="${0}"
-        --web-host=0.0.0.0
-        --no-web-open-browser
-        # Use the `Host` header to construct URLs for display.
-        --set=showhost=true
-      )
-      shopt -s nullglob
-      for script in "${HOME}"/addons/*.py
-      do
-        arguments+=(--scripts="${script}")
-      done
-      exec mitmweb "${arguments[@]}"
-    ' "${mitmweb_password}"
-)"
-
-function cleanup-proxy-container {
-  podman rm -f "${proxy_container}" >/dev/null 2>&1 || true
-  cleanup-networks
-}
-trap cleanup-proxy-container EXIT
-
-# Wait for mitmproxy to generate its CA and WireGuard keys.
-mitmproxy_ca_path='/root/.mitmproxy/mitmproxy-ca-cert.pem'
-wireguard_key_path='/root/.mitmproxy/wireguard.conf'
-timeout=5
-start=$(date +%s)
-until podman exec "${proxy_container}" test -f "${wireguard_key_path}" 2> /dev/null
-do
-  sleep 0
-  now=$(date +%s)
-  if (( now - start > timeout ))
-  then
-    echo "Failed to start proxy pod after ${timeout} seconds" >&2
-    exit 1
-  fi
-done
-
-echo "Network monitor: http://$(podman port "${proxy_container}" 8081)/?token=${mitmweb_password}" >&2
-
-# The proxy's address is the WireGuard endpoint. mitmproxy stores both private
-# keys, so derive the server's public key (which the workload's peer needs).
-proxy_ip="$(podman inspect --format="{{(index .NetworkSettings.Networks \"${wireguard_network}\").IPAddress}}" "${proxy_container}")"
-read -r server_key client_key < <(podman exec "${proxy_container}" python -c \
-  'import json, mitmproxy_rs; c = json.load(open("/root/.mitmproxy/wireguard.conf")); print(mitmproxy_rs.wireguard.pubkey(c["server_key"]), c["client_key"])')
+# Set all the configurable settings to defaults before running the configure scripts.
 
 # Sandbox container image.
 SANDBOX_IMAGE="${SANDBOX_IMAGE:-debian:latest}"
@@ -177,6 +117,12 @@ then
     IS_SANDBOX=1
   )
 fi
+# Array of environment variables to set in the proxy, similar to `SANDBOX_ENV`.
+# Empty by default.
+if [ -z "${PROXY_ENV[@]+.}" ]
+then
+  declare -a PROXY_ENV=()
+fi
 
 # Process the user's configuration scripts from root to leaf.
 for (( i=${#configure_paths[@]}-1; i>=0; i-- ))
@@ -184,12 +130,89 @@ do
   source "${configure_paths[i]}"
 done
 
+function cleanup-proxy-confdir {
+  rm -rf "${mitmproxy_confdir}"
+}
+trap cleanup-proxy-confdir EXIT
+
+# The workload's network is internal: it has no route to the internet of its own,
+# so the proxy (its only neighbor, dual-homed onto the egress network) is the only way out.
+wireguard_network="$(podman network create --internal)"
+egress_network="$(podman network create)"
+
+function cleanup-networks {
+  podman network rm "${wireguard_network}" "${egress_network}" > /dev/null 2>&1 || true
+  cleanup-proxy-confdir
+}
+trap cleanup-networks EXIT
+
+# `mitmweb` always requires auth (setting an empty password just makes it generate a random one).
+# Pin a known password and let the launcher pass it as `?token=` to skip the prompt.
+mitmweb_password='sandbox'
+proxy_container="$(
+  podman run \
+    --detach --rm \
+    --user=root \
+    --network="${wireguard_network}" \
+    --network="${egress_network}" \
+    --volume="${mitmproxy_confdir}":/root/.mitmproxy:rw \
+    "${proxy_addon_mounts[@]}" \
+    --publish=127.0.0.1::8081 \
+    "${PROXY_ENV[@]/#/--env=}" \
+    mitmproxy/mitmproxy:latest \
+    bash -c '
+      arguments=(
+        --mode=wireguard
+        --set=web_password="${0}"
+        --web-host=0.0.0.0
+        --no-web-open-browser
+        # Use the `Host` header to construct URLs for display.
+        --set=showhost=true
+      )
+      shopt -s nullglob
+      for script in "${HOME}"/addons/*.py
+      do
+        arguments+=(--scripts="${script}")
+      done
+      exec mitmweb "${arguments[@]}"
+    ' "${mitmweb_password}"
+)"
+
+function cleanup-proxy-container {
+  podman rm -f "${proxy_container}" > /dev/null 2>&1 || true
+  cleanup-networks
+}
+trap cleanup-proxy-container EXIT
+
+# Wait for mitmproxy to generate its CA and WireGuard keys.
+wireguard_key_path='/root/.mitmproxy/wireguard.conf'
+timeout=5
+start=$(date +%s)
+until podman exec "${proxy_container}" test -f "${wireguard_key_path}" 2> /dev/null
+do
+  sleep 0
+  now=$(date +%s)
+  if (( now - start > timeout ))
+  then
+    echo "Failed to start proxy pod after ${timeout} seconds" >&2
+    exit 1
+  fi
+done
+
+echo "Network monitor: http://$(podman port "${proxy_container}" 8081)/?token=${mitmweb_password}" >&2
+
+# The proxy's address is the WireGuard endpoint. mitmproxy stores both private
+# keys, so derive the server's public key (which the workload's peer needs).
+proxy_ip="$(podman inspect --format="{{(index .NetworkSettings.Networks \"${wireguard_network}\").IPAddress}}" "${proxy_container}")"
+read -r server_key client_key < <(podman exec "${proxy_container}" python -c \
+  'import json, mitmproxy_rs; c = json.load(open("/root/.mitmproxy/wireguard.conf")); print(mitmproxy_rs.wireguard.pubkey(c["server_key"]), c["client_key"])')
+
 # A pod owns the sandbox' network namespace.
 # A throwaway container will configure the WireGuard tunnel inside the pod before the sandbox starts.
 sandbox_pod="$(podman pod create --network="${wireguard_network}" --hostname="${SANDBOX_HOSTNAME}")"
 
 function cleanup-pod {
-  podman pod rm -f "${sandbox_pod}" >/dev/null 2>&1 || true
+  podman pod rm -f "${sandbox_pod}" > /dev/null 2>&1 || true
   cleanup-proxy-container
 }
 trap cleanup-pod EXIT
@@ -228,7 +251,7 @@ podman run \
   "${SANDBOX_ENV[@]/#/--env=}" \
   "${SANDBOX_IMAGE}" \
   bash -c '
-    echo "nameserver 10.0.0.53" >/etc/resolv.conf
+    echo "nameserver 10.0.0.53" > /etc/resolv.conf
 
     for ca_certificates in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt
     do
