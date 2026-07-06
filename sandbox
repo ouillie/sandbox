@@ -12,15 +12,6 @@ directory="${PWD}"
 index=1
 configured='false'
 while
-  proxy_addon="${directory}/.sandbox/proxy.py"
-  if [ -f "${proxy_addon}" ]
-  then
-    proxy_addon="${proxy_addon/#\/\//\/}"
-    echo "Using proxy addon: ${proxy_addon}" >&2
-    configured='true'
-    proxy_addon_mounts+=(--volume="${proxy_addon}":"/root/addons/$(printf '%03d' "${index}").py":ro)
-  fi
-
   configure_path="${directory}/.sandbox/configure.sh"
   if [ -f "${configure_path}" ]
   then
@@ -28,6 +19,15 @@ while
     echo "Using configuration: ${configure_path}" >&2
     configured='true'
     configure_paths+=("${configure_path}")
+  fi
+
+  proxy_addon="${directory}/.sandbox/proxy.py"
+  if [ -f "${proxy_addon}" ]
+  then
+    proxy_addon="${proxy_addon/#\/\//\/}"
+    echo "Using proxy addon: ${proxy_addon}" >&2
+    configured='true'
+    proxy_addon_mounts+=(--volume="${proxy_addon}":"/root/addons/$(printf '%03d' "${index}").py":ro)
   fi
 
   [ "${directory}" != '/' ]
@@ -127,7 +127,11 @@ fi
 # Process the user's configuration scripts from root to leaf.
 for (( i=${#configure_paths[@]}-1; i>=0; i-- ))
 do
-  source "${configure_paths[i]}"
+  source "${configure_paths[i]}" || {
+    configure_status=$?
+    echo "Failed while evaluating '${configure_paths[i]}'" >&2
+    exit $configure_status
+  }
 done
 
 function cleanup-proxy-confdir {
