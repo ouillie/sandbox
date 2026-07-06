@@ -69,8 +69,6 @@ export PROXY_CA_CERT_PEM="$(< "${mitmproxy_host_ca_cert_path}")"
 SANDBOX_IMAGE="${SANDBOX_IMAGE:-debian:latest}"
 # Sandbox container username.
 SANDBOX_USER="${SANDBOX_USER:-root}"
-# Sandbox container hostname.
-SANDBOX_HOSTNAME="${SANDBOX_HOSTNAME:-sandbox}"
 # Working directory in the sandbox at entry.
 # By default, use the current working directory on the host.
 # If that path starts with the host's `${HOME}` path, swap out the prefix for `/root`,
@@ -213,7 +211,12 @@ read -r server_key client_key < <(podman exec "${proxy_container}" python -c \
 
 # A pod owns the sandbox' network namespace.
 # A throwaway container will configure the WireGuard tunnel inside the pod before the sandbox starts.
-sandbox_pod="$(podman pod create --network="${wireguard_network}" --hostname="${SANDBOX_HOSTNAME}")"
+declare -a arguments=()
+if [ -n "${SANDBOX_HOSTNAME:-}" ]
+then
+  arguments+=(--hostname="${SANDBOX_HOSTNAME}")
+fi
+sandbox_pod="$(podman pod create --network="${wireguard_network}" "${arguments[@]}")"
 
 function cleanup-pod {
   podman pod rm -f "${sandbox_pod}" > /dev/null 2>&1 || true
