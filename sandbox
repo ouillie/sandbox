@@ -201,7 +201,15 @@ do
   fi
 done
 
-echo "Network monitor: http://$(podman port "${proxy_container}" 8081)/?token=${mitmweb_password}" >&2
+mitmweb_url="http://$(podman port "${proxy_container}" 8081)/?token=${mitmweb_password}"
+echo "Network monitor: ${mitmweb_url}" >&2
+if command -v xdg-open > /dev/null
+then
+  xdg-open "${mitmweb_url}"
+elif command -v open > /dev/null
+then
+  open "${mitmweb_url}"
+fi
 
 # The proxy's address is the WireGuard endpoint. mitmproxy stores both private
 # keys, so derive the server's public key (which the workload's peer needs).
