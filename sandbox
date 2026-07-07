@@ -217,6 +217,7 @@ then
   arguments+=(--hostname="${SANDBOX_HOSTNAME}")
 fi
 sandbox_pod="$(podman pod create --network="${wireguard_network}" "${arguments[@]}")"
+sandbox_hostname="${SANDBOX_HOSTNAME:-$(podman pod inspect --format '{{.Name}}' "${sandbox_pod}")}"
 
 function cleanup-pod {
   podman pod rm -f "${sandbox_pod}" > /dev/null 2>&1 || true
@@ -254,6 +255,7 @@ fi
 podman run \
   --interactive --rm \
   "${arguments[@]}" \
+  --name="${sandbox_hostname}" \
   --pod="${sandbox_pod}" \
   --volumes-from="${proxy_container}":ro \
   --user="${SANDBOX_USER}" \
