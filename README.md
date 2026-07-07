@@ -82,19 +82,58 @@ shown with their default values:
       <td><code>SANDBOX_WORKDIR</code></td>
       <td>scalar</td>
       <td><code>${PWD/#${HOME}//root}</code></td>
-      <td>Working directory in the sandbox at entry. Defaults to the current working directory on the host. If that path starts with the host's <code>${HOME}</code> path, that prefix is swapped for <code>/root</code> because the process in the sandbox runs as root by default.</td>
+      <td>
+        Working directory in the sandbox at entry.
+        Defaults to the current working directory on the host.
+        If that path starts with the host's <code>${HOME}</code> path,
+        that prefix is swapped for <code>/root</code>
+        because the process in the sandbox runs as root by default.
+      </td>
     </tr>
     <tr>
       <td><code>SANDBOX_MOUNTS</code></td>
       <td>array</td>
-      <td><code>${HOME}:/root:O</code><br><code>${PWD}:${SANDBOX_WORKDIR}:rw</code></td>
-      <td>Mount points to bind-mount from the host into the sandbox, using Podman's <code>&lt;host-path&gt;:&lt;guest-path&gt;[:&lt;mode&gt;]</code> syntax, where <code>&lt;mode&gt;</code> can be <code>ro</code>, <code>rw</code>, or <code>O</code> (overlay). Defaults to mounting the host's <code>${HOME}</code> directory to <code>/root</code> as an overlay, and the working directory read-write.</td>
+      <td>
+        <ul>
+          <li><code>${HOME}:/root:O</code></li>
+          <li><code>${PWD}:${SANDBOX_WORKDIR}:rw</code></li>
+        </ul>
+      </td>
+      <td>
+        Mount points to bind-mount from the host into the sandbox,
+        using Podman's <code>&lt;host-path&gt;:&lt;guest-path&gt;[:&lt;mode&gt;]</code> syntax,
+        where <code>&lt;mode&gt;</code> can be <code>ro</code>, <code>rw</code>, or <code>O</code> (overlay).
+        Defaults to mounting the host's <code>${HOME}</code> directory to <code>/root</code> as an overlay,
+        and the working directory read-write.
+      </td>
     </tr>
     <tr>
       <td><code>SANDBOX_ENV</code></td>
       <td>array</td>
-      <td><code>SSL_CERT_FILE=&lt;proxy-certificate&gt;</code><br><code>CURL_CA_BUNDLE=&lt;proxy-certificate&gt;</code><br><code>GIT_SSL_CAINFO=&lt;proxy-certificate&gt;</code><br><code>CARGO_HTTP_CAINFO=&lt;proxy-certificate&gt;</code><br><code>NODE_EXTRA_CA_CERTS=&lt;proxy-certificate&gt;</code><br><code>REQUESTS_CA_BUNDLE=&lt;proxy-certificate&gt;</code><br><code>IS_SANDBOX=1</code></td>
-      <td>Environment variables to set in the sandbox using Podman's <code>NAME=VALUE</code> or simply <code>NAME</code> syntax. Defaults to trusting the proxy's ephemeral CA in most apps, since the proxy intercepts all network traffic, and to setting <code>IS_SANDBOX=1</code> to enable Claude Code root execution.</td>
+      <td>
+        <ul>
+          <li><code>SANDBOX=1</code></li>
+        </ul>
+        Set to the name of the proxy pod:
+        <ul>
+          <li><code>PROXY_NAME</code></li>
+        </ul>
+        The following are set to the file path of the Proxy's CA certificate:
+        <ul>
+          <li><code>SSL_CERT_FILE</code></li>
+          <li><code>CURL_CA_BUNDLE</code></li>
+          <li><code>GIT_SSL_CAINFO</code></li>
+          <li><code>CARGO_HTTP_CAINFO</code></li>
+          <li><code>NODE_EXTRA_CA_CERTS</code></li>
+          <li><code>REQUESTS_CA_BUNDLE</code></li>
+        </ul>
+      </td>
+      <td>
+        Environment variables to set in the sandbox
+        using Podman's <code>NAME=VALUE</code> or simply <code>NAME</code> syntax.
+        Defaults to trusting the proxy's ephemeral CA in most apps, since the proxy intercepts all network traffic,
+        and to setting <code>IS_SANDBOX=1</code> to enable Claude Code root execution.
+      </td>
     </tr>
     <tr>
       <td><code>PROXY_ENV</code></td>

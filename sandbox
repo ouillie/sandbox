@@ -238,6 +238,10 @@ podman run \
     ip route replace default dev wg0
   ' "${0}" "${client_key}" "${server_key}" "${proxy_ip}"
 
+# Set the special `PROXY_NAME` env var in the sandbox to the short name of the proxy container.
+# This enables usability wins like including the name in the shell prompt.
+SANDBOX_ENV+=(PROXY_NAME="$(podman inspect --format '{{.Name}}' "${proxy_container}")")
+
 declare -a arguments=()
 if [ -t 0 ]
 then
