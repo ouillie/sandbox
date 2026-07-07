@@ -34,9 +34,11 @@ Each such directory may contain any of the following optional files:
 
 In both cases, child directories take precedence over parent directories.
 For `mitmproxy` addon scripts,
-that means the leaf is processed first, followed by ancestors up the path.
+that means the leaf is processed first, followed by ancestors up the path
+(allowing children to perform their processing first).
 For configuration scripts,
-that means the root is processed first, followed by children down the path.
+that means the root is processed first, followed by children down the path
+(allowing children to override parents).
 
 Before starting the sandbox,
 the URL of a locally-accessible `mitmweb` console to monitor network traffic
@@ -150,6 +152,9 @@ that value will be used *instead of* the default.
 > [!IMPORTANT]
 > When customizing array-valued settings in a `configure.sh` script,
 > be careful as to whether you want to overwrite, append, or otherwise modify the inherited value.
+
+Configuration scripts are run in an environment where the variable `PROXY_CA_CERT_PEM`
+contains the PEM-encoded contents of the Proxy's CA certificate.
 
 ## Examples
 
