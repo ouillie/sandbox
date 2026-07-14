@@ -233,12 +233,24 @@ function cleanup-pod {
 }
 trap cleanup-pod EXIT
 
+# Build an image with basic tools to set up the network for the sandbox.
+# This adds a single layer to the already-cached `mitmproxy` image we just used,
+# so it should be somewhat cheap on the initial run, and very cheap on subsequent runs.
+network_tools_image="$(
+  podman build --quiet --file - <<EOF
+FROM mitmproxy/mitmproxy:latest
+RUN apt-get update \\
+  && apt-get install --yes --no-install-recommends iproute2 wireguard-tools \\
+  && rm -rf /var/lib/apt/lists/*
+EOF
+)"
+
 # Set up the WireGuard tunnel to the proxy in the sandbox pod's namespace.
 podman run \
   --rm \
   --pod="${sandbox_pod}" \
   --cap-add=NET_ADMIN \
-  mitmproxy/mitmproxy:latest \
+  "${network_tools_image}" \
   bash -c '
     ip link add wg0 type wireguard
     wg set wg0 private-key <(echo "${1}") peer "${2}" endpoint "${3}:51820" allowed-ips 0.0.0.0/0
