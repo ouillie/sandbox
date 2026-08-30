@@ -92,12 +92,20 @@ fi
 # where `<mode>` can be `ro`, `rw`, or `O` (overlay).
 # By default, mount the host's `${HOME}` directory to `/root` as an overlay,
 # and mount the host's working directory to the guest's working directory read-write.
+# If the host's working directory is the home directory, mount it read-write.
 if [ -z "${SANDBOX_MOUNTS[@]+.}" ]
 then
-  declare -a SANDBOX_MOUNTS=(
-    "${HOME}":'/root':O
-    "${PWD}":"${SANDBOX_WORKDIR}":rw
-  )
+  if [[ "${PWD}" = "${HOME}" ]]
+  then
+    declare -a SANDBOX_MOUNTS=(
+      "${HOME}":'/root':rw
+    )
+  else
+    declare -a SANDBOX_MOUNTS=(
+      "${HOME}":'/root':O
+      "${PWD}":"${SANDBOX_WORKDIR}":rw
+    )
+  fi
 fi
 # Array of environment variables to set in the sandbox
 # using Podman's `NAME=VALUE` or simply `NAME` syntax.
