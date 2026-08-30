@@ -213,13 +213,18 @@ do
 done
 
 mitmweb_url="http://$(podman port "${proxy_container}" 8081)/?token=${mitmweb_password}"
-echo "Network monitor: ${mitmweb_url}" >&2
-if command -v xdg-open > /dev/null
+# Use an OSC-8 hyperlink to print the network monitor URL.
+# https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda
+printf 'Network monitor: \e]8;;%s\e\\%s\e]8;;\e\\\n' "${mitmweb_url}" "${mitmweb_url}" >&2
+if [ -n "${AUTO_OPEN_NETWORK_MONITOR+.}" ]
 then
-  xdg-open "${mitmweb_url}"
-elif command -v open > /dev/null
-then
-  open "${mitmweb_url}"
+  if command -v xdg-open > /dev/null
+  then
+    xdg-open "${mitmweb_url}"
+  elif command -v open > /dev/null
+  then
+    open "${mitmweb_url}"
+  fi
 fi
 
 # The proxy's address is the WireGuard endpoint.

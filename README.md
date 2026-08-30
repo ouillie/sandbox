@@ -143,6 +143,12 @@ shown with their default values:
       <td>Empty</td>
       <td>Environment variables to set in the proxy container, similar to <code>SANDBOX_ENV</code>.</td>
     </tr>
+    <tr>
+      <td><code>AUTO_OPEN_NETWORK_MONITOR</code></td>
+      <td>scalar</td>
+      <td>Unset</td>
+      <td>If set, automatically open the `mitmweb` page in the browser.</td>
+    </tr>
   </tbody>
 </table>
 
