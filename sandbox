@@ -12,10 +12,12 @@ directory="${PWD}"
 index=1
 configured='false'
 while
+  # Strip a trailing slash; should only affect the root directory (`/`).
+  directory=${directory%/}
+
   configure_path="${directory}/.sandbox/configure.sh"
   if [ -f "${configure_path}" ]
   then
-    configure_path="${configure_path/#\/\//\/}"
     echo "Using configuration: ${configure_path}" >&2
     configured='true'
     configure_paths+=("${configure_path}")
@@ -24,13 +26,12 @@ while
   proxy_addon="${directory}/.sandbox/proxy.py"
   if [ -f "${proxy_addon}" ]
   then
-    proxy_addon="${proxy_addon/#\/\//\/}"
     echo "Using proxy addon: ${proxy_addon}" >&2
     configured='true'
     proxy_addon_mounts+=(--volume="${proxy_addon}":"/root/addons/$(printf '%03d' "${index}").py":ro)
   fi
 
-  [ "${directory}" != '/' ]
+  [ -n "${directory}" ]
 do
   directory="$(dirname "${directory}")"
   index=$(( index + 1 ))
@@ -75,9 +76,11 @@ SANDBOX_USER="${SANDBOX_USER:-root}"
 # because the process in the sandbox runs as root by default.
 if [ -z "${SANDBOX_WORKDIR+.}" ]
 then
+  # Avoid mistakenly substituting the home prefix
+  # when e.g. the working directory is `/home/nameless` and the home directory is `/home/name`.
   case "${PWD}" in
     "${HOME}"|"${HOME}"/*)
-      SANDBOX_WORKDIR="${PWD/#${HOME}//root}"
+      SANDBOX_WORKDIR="${PWD/#"${HOME}"/'/root'}"
       ;;
     *)
       SANDBOX_WORKDIR="${PWD}"
@@ -211,11 +214,23 @@ then
   open "${mitmweb_url}"
 fi
 
-# The proxy's address is the WireGuard endpoint. mitmproxy stores both private
-# keys, so derive the server's public key (which the workload's peer needs).
-proxy_ip="$(podman inspect --format="{{(index .NetworkSettings.Networks \"${wireguard_network}\").IPAddress}}" "${proxy_container}")"
-read -r server_key client_key < <(podman exec "${proxy_container}" python -c \
-  'import json, mitmproxy_rs; c = json.load(open("/root/.mitmproxy/wireguard.conf")); print(mitmproxy_rs.wireguard.pubkey(c["server_key"]), c["client_key"])')
+# The proxy's address is the WireGuard endpoint.
+# mitmproxy stores both private keys,
+# so derive the server's public key (which the workload's peer needs).
+proxy_ip="$(
+  podman inspect "${proxy_container}" \
+    --format="{{(index .NetworkSettings.Networks \"${wireguard_network}\").IPAddress}}"
+)"
+read -r server_key client_key < <(
+  podman exec "${proxy_container}" python -c '
+from json import load
+from mitmproxy_rs import wireguard
+
+with open("/root/.mitmproxy/wireguard.conf") as configuration_file:
+    configuration = load(configuration_file)
+print(wireguard.pubkey(configuration["server_key"]), configuration["client_key"])
+'
+)
 
 # A pod owns the sandbox' network namespace.
 # A throwaway container will configure the WireGuard tunnel inside the pod before the sandbox starts.
