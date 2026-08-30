@@ -70,17 +70,24 @@ export PROXY_CA_CERT_PEM="$(< "${mitmproxy_host_ca_cert_path}")"
 SANDBOX_IMAGE="${SANDBOX_IMAGE:-debian:latest}"
 # Sandbox container username.
 SANDBOX_USER="${SANDBOX_USER:-root}"
+# Sandbox user's home directory.
+if [[ "${SANDBOX_USER}" = 'root' ]]
+then
+  SANDBOX_HOME="${SANDBOX_HOME:-/root}"
+else
+  SANDBOX_HOME="${SANDBOX_HOME:-/home/${SANDBOX_USER}}"
+fi
 # Working directory in the sandbox at entry.
 # By default, use the current working directory on the host.
-# If that path starts with the host's `${HOME}` path, swap out the prefix for `/root`,
-# because the process in the sandbox runs as root by default.
+# If that path starts with the host's `${HOME}` path,
+# swap out that prefix for `${SANDBOX_HOME}`.
 if [ -z "${SANDBOX_WORKDIR+.}" ]
 then
   # Avoid mistakenly substituting the home prefix
   # when e.g. the working directory is `/home/nameless` and the home directory is `/home/name`.
   case "${PWD}" in
     "${HOME}"|"${HOME}"/*)
-      SANDBOX_WORKDIR="${PWD/#"${HOME}"/'/root'}"
+      SANDBOX_WORKDIR="${PWD/#"${HOME}"/"${SANDBOX_HOME}"}"
       ;;
     *)
       SANDBOX_WORKDIR="${PWD}"
@@ -90,19 +97,19 @@ fi
 # Array of mount points to bind-mount from the host into the sandbox,
 # using Podman's `<host-path>:<guest-path>[:<mode>]` syntax,
 # where `<mode>` can be `ro`, `rw`, or `O` (overlay).
-# By default, mount the host's `${HOME}` directory to `/root` as an overlay,
+# By default, mount the host's `${HOME}` directory to `${SANDBOX_HOME}` as an overlay,
 # and mount the host's working directory to the guest's working directory read-write.
 # If the host's working directory is the home directory, mount it read-write.
 if [ -z "${SANDBOX_MOUNTS[@]+.}" ]
 then
-  if [[ "${PWD}" = "${HOME}" ]]
+  if [[ "${SANDBOX_WORKDIR}" = "${SANDBOX_HOME}" ]]
   then
     declare -a SANDBOX_MOUNTS=(
-      "${HOME}":'/root':rw
+      "${HOME}":"${SANDBOX_HOME}":rw
     )
   else
     declare -a SANDBOX_MOUNTS=(
-      "${HOME}":'/root':O
+      "${HOME}":"${SANDBOX_HOME}":O
       "${PWD}":"${SANDBOX_WORKDIR}":rw
     )
   fi
