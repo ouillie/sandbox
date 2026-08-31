@@ -220,9 +220,14 @@ do
 done
 
 mitmweb_url="http://$(podman port "${proxy_container}" 8081)/?token=${mitmweb_password}"
-# Use an OSC-8 hyperlink to print the network monitor URL.
-# https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda
-printf 'Network monitor: \e]8;;%s\e\\%s\e]8;;\e\\\n' "${mitmweb_url}" "${mitmweb_url}" >&2
+if [[ -t 2 ]]
+then
+  # Use an OSC-8 hyperlink to print the network monitor URL when printing to a terminal.
+  # https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda
+  printf 'Network monitor: \e]8;;%s\e\\%s\e]8;;\e\\\n' "${mitmweb_url}" "${mitmweb_url}"
+else
+  printf 'Network monitor: %s\n' "${mitmweb_url}"
+fi >&2
 if [ -n "${AUTO_OPEN_NETWORK_MONITOR+.}" ]
 then
   if command -v xdg-open > /dev/null
