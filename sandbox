@@ -42,26 +42,16 @@ then
 fi
 
 mitmproxy_confdir="$(mktemp -d)"
-mitmproxy_host_ca_path="${mitmproxy_confdir}/mitmproxy-ca.pem"
 mitmproxy_host_ca_cert_path="${mitmproxy_confdir}/mitmproxy-ca-cert.pem"
 mitmproxy_ca_path='/root/.mitmproxy/mitmproxy-ca-cert.pem'
 podman run \
   --rm \
   --volume="${mitmproxy_confdir}":/root/.mitmproxy:rw \
   mitmproxy/mitmproxy:latest \
-  bash -c '
-    openssl req -x509 \
-      -newkey rsa:2048 \
-      -noenc -batch -quiet \
-      -days 365 \
-      -keyout /root/.mitmproxy/mitmproxy-ca.key \
-      -out /root/.mitmproxy/mitmproxy-ca-cert.pem \
-      -subj "/O=mitmproxy/CN=mitmproxy" \
-      -addext "basicConstraints=critical,CA:TRUE" \
-      -addext "keyUsage=critical,keyCertSign,cRLSign"
-    cat /root/.mitmproxy/mitmproxy-ca.key /root/.mitmproxy/mitmproxy-ca-cert.pem \
-      > /root/.mitmproxy/mitmproxy-ca.pem
-  '
+  python -c <<EOF
+from mitmproxy.certs import CertStore
+CertStore.from_store("/root/.mitmproxy", "mitmproxy", 2048)
+EOF
 export PROXY_CA_CERT_PEM="$(< "${mitmproxy_host_ca_cert_path}")"
 
 # Set all the configurable settings to defaults before running the configure scripts.
